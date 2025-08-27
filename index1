@@ -1,0 +1,222 @@
+diff --git a//dev/null b/index.html
+index 0000000000000000000000000000000000000000..78564ea08f1d1b427676b2bf209517d0fa4d77ff 100644
+--- a//dev/null
++++ b/index.html
+@@ -0,0 +1,217 @@
++<!doctype html>
++<html>
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>Bahn-Copilot – Demo</title>
++<script src="https://cdn.tailwindcss.com"></script>
++<script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
++<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
++<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
++</head>
++<body class="bg-gradient-to-b from-slate-50 to-white text-slate-800">
++<div id="root"></div>
++<script type="text/babel">
++const { useState, useMemo } = React;
++
++function pad(n){return String(n).padStart(2,'0');}
++
++async function api(path){
++  const url = 'https://v6.vbb.transport.rest' + path;
++  const r = await fetch(url);
++  if(!r.ok) throw new Error('API ' + url + ' failed');
++  return await r.json();
++}
++
++async function searchStations(q){ if(!q) return []; return await api('/locations?query='+encodeURIComponent(q)); }
++
++async function fetchJourneys(params){
++  const qs = new URLSearchParams(params).toString();
++  return await api('/journeys?' + qs);
++}
++
++function App(){
++  const [from,setFrom]=useState('');
++  const [to,setTo]=useState('');
++  const [fromId,setFromId]=useState('');
++  const [toId,setToId]=useState('');
++  const [outDate,setOutDate]=useState('');
++  const [outTime,setOutTime]=useState('');
++  const [maxTransfers,setMaxTransfers]=useState('1');
++  const [retEnabled,setRetEnabled]=useState(false);
++  const [retDate,setRetDate]=useState('');
++  const [retTime,setRetTime]=useState('');
++  const [generated,setGenerated]=useState('');
++  const [copied,setCopied]=useState(false);
++
++  const dateLong = useMemo(()=>{
++    if(!outDate) return '(Datum fehlt)';
++    const d=new Date(outDate+(outTime?`T${outTime}:00`:'T00:00:00'));
++    return d.toLocaleDateString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric'});
++  },[outDate,outTime]);
++
++  async function pickStation(setName,setId){
++    const q=prompt('Bahnhof suchen (z. B. Berlin Hbf)');
++    const list=await searchStations(q);
++    if(!list.length) return alert('Nichts gefunden.');
++    const options=list.map((s,i)=>`${i+1}) ${s.name} [${s.id}]`).join('\n');
++    const idx=Number(prompt('Bitte wählen:\n'+options))-1;
++    if(idx>=0 && idx<list.length){ setName(list[idx].name); setId(list[idx].id); }
++  }
++
++  async function buildEmailBlock(){
++    if(!fromId||!toId||!outDate||!outTime){
++      setGenerated('Bitte Start/Ziel (mit Auswahl), Datum & Uhrzeit ausfüllen.');
++      return;
++    }
++    const departure=new Date(`${outDate}T${outTime}:00`).toISOString();
++    const transfers=maxTransfers==='99'?undefined:Number(maxTransfers);
++    let data;
++    try{
++      data=await fetchJourneys({from:fromId,to:toId,departure,transfers});
++    }catch(e){
++      console.error(e);
++      setGenerated('API-Fehler bei der Fahrtenabfrage.');
++      return;
++    }
++    const legs=(data?.journeys||[]).slice(0,3);
++    const lines=[`Verbindungen ${from} \u2192 ${to} (${dateLong})`,''];
++    for(let i=0;i<legs.length;i++){
++      const j=legs[i];
++      const dep=j.legs[0]?.departure?new Date(j.legs[0].departure):null;
++      const arr=j.legs.at(-1)?.arrival?new Date(j.legs.at(-1).arrival):null;
++      const dur=j.duration||'';
++      const transfersCount=(j.legs||[]).length-1;
++      lines.push(`${i+1}) ${dep?pad(dep.getHours())+':'+pad(dep.getMinutes()):'??'}–${arr?pad(arr.getHours())+':'+pad(arr.getMinutes()):'??'} (${dur}) | ${transfersCount} Umstieg(e)`);
++      for(const leg of j.legs){
++        const f=leg.origin?.name||'?';
++        const t=leg.destination?.name||'?';
++        const depT=leg.departure?new Date(leg.departure):null;
++        const arrT=leg.arrival?new Date(leg.arrival):null;
++        const line=leg.line?.name||leg.mode||'';
++        const depPl=leg.departurePlatform?` Gl. ${leg.departurePlatform}`:'';
++        lines.push(`   ${f} ${depT?pad(depT.getHours())+':'+pad(depT.getMinutes()):'??'} (${line}) → ${t} ${arrT?pad(arrT.getHours())+':'+pad(arrT.getMinutes()):'??'}${depPl}`);
++        const plat=leg.arrivalPlatform||leg.departurePlatform;
++        const progn=(leg.reachable===false)?'⚠️ Anschluss kritisch':'pünktlich';
++        lines.push(`   [Umstieg ~${Math.max(5,10)} min]  ${plat?' / Gleis '+plat:''}`);
++        lines.push(`   Prognose: ${progn}`);
++      }
++      lines.push('');
++    }
++    if(retEnabled && retDate && retTime){
++      const retDeparture=new Date(`${retDate}T${retTime}:00`).toISOString();
++      try{
++        const retData=await fetchJourneys({from:toId,to:fromId,departure:retDeparture,transfers});
++        const retLegs=(retData?.journeys||[]).slice(0,3);
++        const rTitle=`R\u00fcckfahrt (${to} \u2192 ${from}, ${new Date(`${retDate}T${retTime}:00`).toLocaleDateString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric'})})`;
++        lines.push(rTitle,'');
++        for(let i=0;i<retLegs.length;i++){
++          const j=retLegs[i];
++          const dep=j.legs[0]?.departure?new Date(j.legs[0].departure):null;
++          const arr=j.legs.at(-1)?.arrival?new Date(j.legs.at(-1).arrival):null;
++          const dur=j.duration||'';
++          const transfersCount=(j.legs||[]).length-1;
++          lines.push(`${i+1}) ${dep?pad(dep.getHours())+':'+pad(dep.getMinutes()):'??'}–${arr?pad(arr.getHours())+':'+pad(arr.getMinutes()):'??'} (${dur}) | ${transfersCount} Umstieg(e)`);
++        }
++        lines.push('');
++      }catch(e){
++        console.error(e);
++        lines.push('R\u00fcckfahrt: API-Fehler.','');
++      }
++    }
++    lines.push('Hinweis: Daten & Verf\u00fcgbarkeit ohne Gew\u00e4hr.');
++    setGenerated(lines.join('\n'));
++    setCopied(false);
++  }
++
++  async function copyToClipboard(){
++    if(!generated) return;
++    try{
++      await navigator.clipboard.writeText(generated);
++      setCopied(true);
++      setTimeout(()=>setCopied(false),2000);
++    }catch(e){
++      console.error(e);
++      alert('Kopieren nicht erlaubt – bitte Text manuell markieren und kopieren.');
++    }
++  }
++
++  return (
++<div className="max-w-5xl mx-auto space-y-6 p-4">
++  <header className="flex items-center justify-between">
++    <h1 className="text-2xl md:text-3xl font-semibold">🚆 Bahn-Copilot – Demo</h1>
++  </header>
++
++  <div className="grid md:grid-cols-3 gap-4">
++    <div className="md:col-span-2 bg-white rounded-2xl shadow p-4 space-y-4">
++      <h2 className="text-lg font-medium">Basisdaten</h2>
++      <div className="grid sm:grid-cols-2 gap-3">
++        <button className="p-2 rounded-xl border" onClick={()=>pickStation(setFrom,setFromId)}>
++          {from?('Start: '+from):'Startbahnhof wählen'}
++        </button>
++        <button className="p-2 rounded-xl border" onClick={()=>pickStation(setTo,setToId)}>
++          {to?('Ziel: '+to):'Zielbahnhof wählen'}
++        </button>
++        <label className="flex flex-col gap-1">
++          <span className="text-sm">Datum (Hin)</span>
++          <input type="date" className="border rounded-xl p-2" value={outDate} onChange={e=>setOutDate(e.target.value)} />
++        </label>
++        <label className="flex flex-col gap-1">
++          <span className="text-sm">Uhrzeit (Hin)</span>
++          <input type="time" className="border rounded-xl p-2" value={outTime} onChange={e=>setOutTime(e.target.value)} />
++        </label>
++        <label className="flex items-center gap-2">
++          <input type="checkbox" checked={retEnabled} onChange={e=>setRetEnabled(e.target.checked)} /> Rückfahrt aktivieren
++        </label>
++        {retEnabled && (
++          <>
++          <label className="flex flex-col gap-1">
++            <span className="text-sm">Datum (Rück)</span>
++            <input type="date" className="border rounded-xl p-2" value={retDate} onChange={e=>setRetDate(e.target.value)} />
++          </label>
++          <label className="flex flex-col gap-1">
++            <span className="text-sm">Uhrzeit (Rück)</span>
++            <input type="time" className="border rounded-xl p-2" value={retTime} onChange={e=>setRetTime(e.target.value)} />
++          </label>
++          </>
++        )}
++      </div>
++
++      <div className="grid sm:grid-cols-2 gap-3">
++        <label className="flex flex-col gap-1">
++          <span className="text-sm">Max. Umstiege</span>
++          <select className="border rounded-xl p-2" value={maxTransfers} onChange={e=>setMaxTransfers(e.target.value)}>
++            <option value="0">0</option>
++            <option value="1">1</option>
++            <option value="2">2</option>
++            <option value="99">egal</option>
++          </select>
++        </label>
++      </div>
++
++      <button onClick={buildEmailBlock} className="px-4 py-2 rounded-2xl bg-slate-900 text-white shadow hover:shadow-md">Verbindungen generieren</button>
++    </div>
++
++    <div className="bg-white rounded-2xl shadow p-4 space-y-3">
++      <h2 className="text-lg font-medium">Ausgabe (Mail-Block)</h2>
++      <textarea className="w-full h-96 border rounded-xl p-3 font-mono text-sm" value={generated} onChange={e=>setGenerated(e.target.value)} placeholder="Klicke auf ‘Verbindungen generieren’." />
++      <div className="flex items-center gap-3">
++        <button onClick={copyToClipboard} className="px-3 py-2 rounded-2xl bg-slate-100 border hover:bg-slate-50">
++          {copied ? '✔️ Kopiert' : 'In Zwischenablage kopieren'}
++        </button>
++      </div>
++    </div>
++  </div>
++
++  <footer className="text-xs text-slate-500">
++    Demo-Status: echte Daten via transport.rest API (VBB). Zeiten/Gleise ohne Gewähr.
++  </footer>
++</div>
++);
++}
++
++const root = ReactDOM.createRoot(document.getElementById('root'));
++root.render(<App />);
++</script>
++</body>
++</html>
